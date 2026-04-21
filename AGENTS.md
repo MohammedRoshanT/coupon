@@ -1,36 +1,63 @@
-<!-- BEGIN:nextjs-agent-rules -->
-# This is NOT the Next.js you know
+## Project: Digital Canteen Coupon System
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
-<!-- END:nextjs-agent-rules -->
+### Tech Stack
+- Next.js 15 App Router with TypeScript
+- Supabase (database + auth)
+- Tailwind CSS
+- Razorpay (payments)
 
-# Project Guidelines
+### Project Structure
+- src/app/ — App Router pages
+- src/components/ — Reusable components
+- src/lib/supabase/client.ts — Browser Supabase client
+- src/lib/supabase/server.ts — Server Supabase client
+- src/types/index.ts — All TypeScript interfaces
+- src/lib/utils/index.ts — Utility functions
 
-## Code Style
-- Use TypeScript with strict mode enabled
-- Follow ESLint configuration for linting
-- Use Tailwind CSS for styling with dark mode support via `dark:` prefix
-- Prefer Server Components by default; use `'use client'` only when interactivity is needed
+### Supabase Rules
+- Always import browser client from '@/lib/supabase/client'
+- Always import server client from '@/lib/supabase/server'
+- Never use service role key on client side
+- All queries must respect RLS
+- Use get_my_role() function for role checks, never query profiles inside a profiles policy
+- Always filter data by college_id for canteen admin and students
 
-## Architecture
-- Next.js 16.2.4 with App Router
-- React 19.2.4 with TypeScript 5.x
-- Supabase for authentication and database
-- Integrations: QR codes, Razorpay payments, Recharts for visualization
-- Path aliases: `@/*` maps to `src/*`
+### Roles
+- super_admin — platform owner, no college_id
+- canteen_admin — manages one college canteen, has college_id
+- hosteler — monthly mess fee, daily QR, has college_id
+- day_scholar — pays per meal, has college_id
 
-## Build and Test
-- `npm run dev` — Start development server
-- `npm run build` — Production build
-- `npm run start` — Start production server
-- `npm run lint` — Run ESLint
-- No test framework configured yet — consider adding Jest or Vitest for testing
+### Database Tables
+- colleges (id, name, email_domain, active)
+- profiles (id, college_id, full_name, email, role, active)
+- meal_slots (id, college_id, name, start_time, end_time, active)
+  - name: 'breakfast' | 'lunch' | 'tea_snacks' | 'dinner'
+- slot_stock (id, meal_slot_id, date, total_stock, remaining_stock, is_closed)
+- subscriptions (id, user_id, college_id, start_date, end_date, amount, payment_status, razorpay_order_id, razorpay_payment_id)
+- daily_qr (id, user_id, date, qr_token)
+- meal_attendance (id, user_id, meal_slot_id, date, scanned_at, status, scanned_by)
+- orders (id, user_id, slot_stock_id, order_type, amount, payment_status, razorpay_order_id, razorpay_payment_id, qr_token, scanned, scanned_at, scanned_by)
+  - order_type: 'meal' | 'snack'
+- snack_items (id, college_id, name, price, active)
+- snack_stock (id, snack_item_id, date, total_stock, remaining_stock, is_closed)
+- snack_orders (id, user_id, snack_stock_id, quantity, amount, payment_status, razorpay_order_id, razorpay_payment_id, qr_token, scanned, scanned_at, scanned_by)
+### Auth Rules
+- Students self-register with college email only
+- College email domain validated against colleges table
+- Canteen admin created by super admin only
+- Super admin created manually via Supabase dashboard
+- After login, redirect based on role to /dashboard/[role]
 
-## Conventions
-- Component structure: Server Components by default
-- Fonts: Use Next.js Font Optimization (Geist family)
-- Images: Use Next.js Image component with static imports
-- Metadata: Define using server-side `Metadata` type in layout
-- Supabase: Use SSR auth flow with `@supabase/ssr` middleware pattern
+### Payments
+- Razorpay Test Mode during development
+- Hostelers pay monthly subscription
+- Day scholars pay per meal/snack
+- Extra snacks for hostelers also go through orders table
 
-See [README.md](README.md) for project overview.
+### UI Rules
+- Purple-600 as primary color
+- Dark mode support using Tailwind dark: classes
+- No external component libraries
+- Use 'use client' only when needed
+- Keep pages clean and minimal

@@ -35,6 +35,26 @@ export interface MealSlot {
   active: boolean
 }
 
+export interface MealItem {
+  id: string
+  college_id: string
+  meal_slot_id: string
+  name: string
+  price: number
+  active: boolean
+  created_at: string
+}
+
+export interface MealItemStock {
+  id: string
+  meal_item_id: string
+  date: string
+  total_stock: number
+  remaining_stock: number
+  is_closed: boolean
+  created_at: string
+}
+
 export interface SlotStock {
   id: string
   meal_slot_id: string
@@ -89,5 +109,36 @@ export interface Order {
   scanned: boolean
   scanned_at: string
   scanned_by: string
+  created_at: string
+}
+
+export interface SnackItem {
+  id: string
+  college_id: string
+  name: string
+  price: number
+  active: boolean
+  created_at: string
+}
+
+export interface SnackStock {
+  id: string
+  snack_item_id: string
+  date: string
+  total_stock: number
+  remaining_stock: number
+  is_closed: boolean
+  created_at: string
+}
+
+export interface SnackOrder {
+  id: string
+  user_id: string
+  snack_stock_id: string
+  quantity: number
+  amount: number
+  payment_status: PaymentStatus
+  qr_token: string
+  scanned: boolean
   created_at: string
 }
