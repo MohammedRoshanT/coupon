@@ -1,7 +1,5 @@
-import type { NextConfig } from "next";
+const nextConfig = {
+  allowedDevOrigins: ['irwin-semicellulous-uprightly.ngrok-free.dev'],
+}
 
-const nextConfig: NextConfig = {
-  /* config options here */
-};
-
-export default nextConfig;
+export default nextConfig

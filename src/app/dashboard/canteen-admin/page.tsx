@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
+import { Html5QrcodeScanner, Html5QrcodeScannerState } from 'html5-qrcode'
 import { createClient } from '@/lib/supabase/client'
 import { MealSlot, MealItem, MealItemStock, SnackItem, SnackStock, Profile } from '@/types'
 import { useRouter } from 'next/navigation'
@@ -23,9 +24,25 @@ export default function CanteenAdminDashboard() {
 
   // Overview
   const [overview, setOverview] = useState({ booked: 0, scanned: 0, snackOrders: 0, revenue: 0 })
+  const [refreshingStats, setRefreshingStats] = useState(false)
 
   // Current Date
   const todayStr = new Date().toLocaleDateString('en-CA')
+
+  // Scanner States
+  const [showScanner, setShowScanner] = useState(false)
+  const [scanResult, setScanResult] = useState<{
+    success: boolean
+    type?: string
+    student_name?: string
+    slot_name?: string
+    item_name?: string
+    quantity?: number
+    message?: string
+  } | null>(null)
+  const scannerRef = useRef<Html5QrcodeScanner | null>(null)
+  const isScanningRef = useRef(false)
+  const isProcessingRef = useRef(false)
 
   // Forms
   const [slotName, setSlotName] = useState<MealSlot['name']>('breakfast')
@@ -125,13 +142,27 @@ export default function CanteenAdminDashboard() {
       setTodaySnackStocks(sStocks)
 
       // FETCH OVERVIEW STATS
+      await fetchStats(collegeId)
+
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const fetchStats = async (cid?: string) => {
+    const targetCollegeId = cid || profile?.college_id
+    if (!targetCollegeId) return
+    setRefreshingStats(true)
+    try {
       // 1. Total Scanned
       const { count: scannedResults } = await supabase
         .from('meal_attendance')
         .select('*, profiles!inner(college_id)', { count: 'exact', head: true })
         .eq('date', todayStr)
         .eq('status', 'present')
-        .eq('profiles.college_id', collegeId)
+        .eq('profiles.college_id', targetCollegeId)
 
       // 2. Orders (Meals)
       const { data: ordersData } = await supabase
@@ -140,25 +171,39 @@ export default function CanteenAdminDashboard() {
         .eq('payment_status', 'paid')
         .gte('created_at', `${todayStr}T00:00:00Z`)
         .lte('created_at', `${todayStr}T23:59:59Z`)
-        .eq('profiles.college_id', collegeId)
+        .eq('profiles.college_id', targetCollegeId)
 
       const bookedMeals = ordersData ? ordersData.length : 0
       const mealsRev = ordersData ? ordersData.reduce((acc, curr) => acc + (curr.amount || 0), 0) : 0
 
       // 3. Snack Orders
+      const { data: sItemsData } = await supabase
+        .from('snack_items')
+        .select('id')
+        .eq('college_id', targetCollegeId)
+
+      const sItemIds = sItemsData ? sItemsData.map(s => s.id) : []
       let snackOrdersCount = 0
       let snacksRev = 0
-      if (sStocks.length > 0) {
-        const sStockIds = sStocks.map(s => s.id)
-        const { data: sOrdersData } = await supabase
-          .from('snack_orders')
-          .select('amount')
-          .eq('payment_status', 'paid')
-          .in('snack_stock_id', sStockIds)
+      if (sItemIds.length > 0) {
+        const { data: sStocksData } = await supabase
+          .from('snack_stock')
+          .select('id')
+          .eq('date', todayStr)
+          .in('snack_item_id', sItemIds)
         
-        if (sOrdersData) {
-          snackOrdersCount = sOrdersData.length
-          snacksRev = sOrdersData.reduce((acc, curr) => acc + (curr.amount || 0), 0)
+        if (sStocksData && sStocksData.length > 0) {
+          const sStockIds = sStocksData.map(s => s.id)
+          const { data: sOrdersData } = await supabase
+            .from('snack_orders')
+            .select('amount')
+            .eq('payment_status', 'paid')
+            .in('snack_stock_id', sStockIds)
+          
+          if (sOrdersData) {
+            snackOrdersCount = sOrdersData.length
+            snacksRev = sOrdersData.reduce((acc, curr) => acc + (curr.amount || 0), 0)
+          }
         }
       }
 
@@ -168,17 +213,117 @@ export default function CanteenAdminDashboard() {
         snackOrders: snackOrdersCount,
         revenue: mealsRev + snacksRev
       })
-
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      console.error('Failed to refresh stats:', err)
     } finally {
-      setLoading(false)
+      setRefreshingStats(false)
     }
   }
 
   useEffect(() => {
     loadData()
   }, [])
+
+  // --- Scanner Logic ---
+  useEffect(() => {
+    if (showScanner) {
+      scannerRef.current = new Html5QrcodeScanner(
+        'qr-scanner',
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        false
+      )
+
+      scannerRef.current.render(
+        async (decodedText) => {
+          if (isProcessingRef.current) return
+          isProcessingRef.current = true
+
+          if (scannerRef.current && scannerRef.current.getState() === Html5QrcodeScannerState.SCANNING) {
+            try {
+              scannerRef.current.pause(true)
+            } catch (err) {
+              console.warn('Could not pause scanner:', err)
+            }
+            isScanningRef.current = false
+          }
+          await handleVerifyQR(decodedText)
+        },
+        (error) => {
+          // ignore background scan errors
+        }
+      )
+      isScanningRef.current = true
+    } else {
+      if (scannerRef.current) {
+        try {
+          scannerRef.current.clear().catch(console.error)
+        } catch (err) {
+          console.warn('Could not clear scanner:', err)
+        }
+        scannerRef.current = null
+        isScanningRef.current = false
+      }
+    }
+
+    return () => {
+      if (scannerRef.current) {
+        try {
+          scannerRef.current.clear().catch(console.error)
+        } catch (err) {
+          console.warn('Could not clear scanner on cleanup:', err)
+        }
+        isScanningRef.current = false
+      }
+    }
+  }, [showScanner])
+
+  const handleVerifyQR = async (token: string) => {
+    try {
+      const res = await fetch('/api/qr/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ qr_token: token })
+      })
+      const data = await res.json()
+      
+      setScanResult(data)
+      
+      if (data.success) {
+        setShowScanner(false)
+        // Delay to allow database commit
+        setTimeout(() => fetchStats(profile?.college_id), 500)
+      } else {
+        // if failed, resume scanner so they can try again
+        if (scannerRef.current) {
+          try {
+            scannerRef.current.resume()
+          } catch (err) {
+            console.warn('Could not resume scanner:', err)
+          }
+          isScanningRef.current = true
+        }
+      }
+
+      // clear result after 5 seconds
+      setTimeout(() => {
+        setScanResult(null)
+      }, 5000)
+
+    } catch (err: any) {
+      setScanResult({ success: false, message: 'Network error or invalid response.' })
+      setTimeout(() => setScanResult(null), 5000)
+      if (scannerRef.current) {
+        try {
+          scannerRef.current.resume()
+        } catch (err) {
+          console.warn('Could not resume scanner on error:', err)
+        }
+        isScanningRef.current = true
+      }
+    } finally {
+      isProcessingRef.current = false
+    }
+  }
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
@@ -410,23 +555,86 @@ export default function CanteenAdminDashboard() {
         )}
 
         {/* 1. OVERVIEW */}
-        <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 relative z-10">
-          <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
-            <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Meals Booked</h3>
-            <p className="text-4xl font-bold text-purple-600 dark:text-purple-400 mt-2">{overview.booked}</p>
+        <section className="relative z-10">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-bold text-neutral-800 dark:text-neutral-100">Overview</h2>
+            <button
+              onClick={() => fetchStats(profile?.college_id)}
+              disabled={refreshingStats}
+              className="flex items-center space-x-2 px-3 py-1.5 bg-neutral-200 hover:bg-neutral-300 dark:bg-neutral-800 dark:hover:bg-neutral-700 rounded-md transition-colors text-sm text-neutral-700 dark:text-neutral-300 disabled:opacity-50"
+            >
+              <svg className={`w-4 h-4 ${refreshingStats ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+              <span>{refreshingStats ? 'Refreshing...' : 'Refresh'}</span>
+            </button>
           </div>
-          <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
-            <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Hostelers Scanned</h3>
-            <p className="text-4xl font-bold text-purple-600 dark:text-purple-400 mt-2">{overview.scanned}</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
+              <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Meals Booked</h3>
+              <p className="text-4xl font-bold text-purple-600 dark:text-purple-400 mt-2">{overview.booked}</p>
+            </div>
+            <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
+              <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Hostelers Scanned</h3>
+              <p className="text-4xl font-bold text-purple-600 dark:text-purple-400 mt-2">{overview.scanned}</p>
+            </div>
+            <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
+              <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Snack Orders</h3>
+              <p className="text-4xl font-bold text-purple-600 dark:text-purple-400 mt-2">{overview.snackOrders}</p>
+            </div>
+            <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
+              <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Total Revenue</h3>
+              <p className="text-4xl font-bold text-green-600 dark:text-green-400 mt-2">₹{overview.revenue}</p>
+            </div>
           </div>
-          <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
-            <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Snack Orders</h3>
-            <p className="text-4xl font-bold text-purple-600 dark:text-purple-400 mt-2">{overview.snackOrders}</p>
+        </section>
+
+        {/* SCANNER SECTION */}
+        <section className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-bold text-neutral-800 dark:text-neutral-100">Scan QR Code</h2>
+            <button
+              onClick={() => setShowScanner(!showScanner)}
+              className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md transition-colors text-sm font-medium"
+            >
+              {showScanner ? 'Close Scanner' : 'Open Scanner'}
+            </button>
           </div>
-          <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
-            <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Total Revenue</h3>
-            <p className="text-4xl font-bold text-green-600 dark:text-green-400 mt-2">₹{overview.revenue}</p>
-          </div>
+
+          {showScanner && (
+            <div className="w-full max-w-sm mx-auto overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900">
+              <div id="qr-scanner" className="w-full"></div>
+            </div>
+          )}
+
+          {scanResult && (
+            <div className={`mt-4 p-4 rounded-lg border ${scanResult.success ? 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800/50' : 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800/50'}`}>
+              {scanResult.success ? (
+                <div className="flex items-start">
+                  <div className="text-green-500 mr-3 mt-0.5">
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-green-800 dark:text-green-400 text-lg">Scan Successful</h3>
+                    <div className="mt-2 space-y-1 text-green-700 dark:text-green-300">
+                      <p><span className="font-semibold text-green-800 dark:text-green-400">Student:</span> {scanResult.student_name}</p>
+                      <p><span className="font-semibold text-green-800 dark:text-green-400">Type:</span> {scanResult.type === 'hosteler_meal' ? 'Hosteler Meal' : scanResult.type === 'snack_order' ? 'Snack Order' : 'Day Scholar Meal'}</p>
+                      <p><span className="font-semibold text-green-800 dark:text-green-400">Item/Slot:</span> {scanResult.slot_name || scanResult.item_name}</p>
+                      {scanResult.quantity && <p><span className="font-semibold text-green-800 dark:text-green-400">Quantity:</span> {scanResult.quantity}</p>}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center">
+                  <div className="text-red-500 mr-3">
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-red-800 dark:text-red-400">Scan Failed</h3>
+                    <p className="text-red-700 dark:text-red-300 mt-1">{scanResult.message}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         {/* 2 & 3. MEALS SECTION */}

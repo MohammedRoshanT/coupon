@@ -39,6 +39,11 @@ export default function HostelerDashboard() {
   // 5. Snack History
   const [snackOrders, setSnackOrders] = useState<SnackOrderWithDetails[]>([])
 
+  // 6. QR Modal State
+  const [showQrModal, setShowQrModal] = useState(false)
+  const [modalQrToken, setModalQrToken] = useState('')
+  const [modalOrderDetails, setModalOrderDetails] = useState<{name: string, quantity: number, amount: number} | null>(null)
+
   // Time metrics
   const todayStr = new Date().toLocaleDateString('en-CA')
 
@@ -189,20 +194,48 @@ export default function HostelerDashboard() {
   const handlePayMessFee = async () => {
     if (!profile) return
     setProcessingSub(true)
+    let pendingRecordId: string | null = null
+
     try {
       const isLoaded = await loadRazorpaySDK()
       if (!isLoaded) throw new Error('Razorpay initialization failed. Check your connection.')
 
       const amount = 3000
 
-      const rOrder = await fetch('/api/payments/create-order', {
-        method: 'POST',
-        body: JSON.stringify({ amount, receipt: `fee_${profile.id}` }),
-        headers: { 'Content-Type': 'application/json' }
-      }).then(r => r.json())
+      const start = new Date()
+      const end = new Date()
+      end.setDate(start.getDate() + 30) // 30 days subscription
 
-      if (rOrder.error) throw new Error(rOrder.error)
+      // Pre-insert pending subscription
+      const { data: pendingData, error: insertError } = await supabase
+        .from('subscriptions')
+        .insert({
+          user_id: profile.id,
+          college_id: profile.college_id,
+          start_date: start.toISOString().split('T')[0],
+          end_date: end.toISOString().split('T')[0],
+          amount,
+          payment_status: 'pending'
+        })
+        .select('id')
+        .single()
 
+      if (insertError || !pendingData) throw new Error(insertError?.message || 'Failed to initialize subscription')
+      pendingRecordId = pendingData.id
+
+    const rOrderRes = await fetch('/api/payments/create-order', {
+  method: 'POST',
+  body: JSON.stringify({ 
+    amount, 
+    receipt: `snk_${pendingRecordId?.slice(0, 33)}` 
+  }),
+  headers: { 'Content-Type': 'application/json' }
+})
+const rOrder = await rOrderRes.json()
+console.log('Create order response:', rOrder)
+if (rOrder.error) throw new Error(rOrder.error)
+
+      let isSuccess = false
       const options = {
         key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
         amount: amount * 100,
@@ -211,35 +244,38 @@ export default function HostelerDashboard() {
         description: "Monthly Mess Fee",
         order_id: rOrder.orderId,
         handler: async function (response: any) {
+          isSuccess = true
           try {
+            const verifyPayload = {
+              ...response,
+              type: 'subscription',
+              record_id: pendingRecordId
+            }
             const verifyReq = await fetch('/api/payments/verify-payment', {
               method: 'POST',
-              body: JSON.stringify(response),
+              body: JSON.stringify(verifyPayload),
               headers: { 'Content-Type': 'application/json' }
             })
             const verify = await verifyReq.json()
             
             if (verify.success) {
-              const start = new Date()
-              const end = new Date()
-              end.setDate(start.getDate() + 30) // 30 days subscription
-
-              await supabase.from('subscriptions').insert({
-                user_id: profile.id,
-                college_id: profile.college_id,
-                start_date: start.toISOString().split('T')[0],
-                end_date: end.toISOString().split('T')[0],
-                amount,
-                payment_status: 'paid',
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_payment_id: response.razorpay_payment_id
-              })
               await loadData()
             } else {
               alert('Payment Verification Failed!')
+              await supabase.from('subscriptions').delete().eq('id', pendingRecordId)
             }
           } catch (e: any) {
              alert(e.message)
+          } finally {
+             setProcessingSub(false)
+          }
+        },
+        modal: {
+          ondismiss: async function() {
+            if (!isSuccess && pendingRecordId) {
+              await supabase.from('subscriptions').delete().eq('id', pendingRecordId)
+            }
+            setProcessingSub(false)
           }
         },
         prefill: {
@@ -250,35 +286,63 @@ export default function HostelerDashboard() {
       }
       
       const rzp = new (window as any).Razorpay(options)
-      rzp.on('payment.failed', function(res: any) {
+      rzp.on('payment.failed', async function(res: any) {
         alert(res.error.description)
+        if (pendingRecordId) {
+          await supabase.from('subscriptions').delete().eq('id', pendingRecordId)
+        }
       })
       rzp.open()
     } catch (err: any) {
       alert(err.message)
       setError(err.message)
-    } finally {
+      if (pendingRecordId) {
+        await supabase.from('subscriptions').delete().eq('id', pendingRecordId)
+      }
       setProcessingSub(false)
     }
   }
 
-  const handlePaySnack = async (snack: typeof availableSnacks[0]) => {
+const handlePaySnack = async (snack: typeof availableSnacks[0]) => {
     if (!profile) return
     const quantity = snackQuantities[snack.id] || 1
     if (quantity < 1 || quantity > snack.remaining) return alert('Invalid quantity')
 
     setProcessingSnackId(snack.id)
+    let pendingRecordId: string | null = null
+    const token = `SNK-${profile.id}-${Date.now()}`
+
     try {
       const isLoaded = await loadRazorpaySDK()
       if (!isLoaded) throw new Error('Razorpay failed to load.')
 
       const amount = snack.price * quantity
 
-      const rOrder = await fetch('/api/payments/create-order', {
+      // 1. Pre-insert pending record
+      const { data: pendingData, error: insertError } = await supabase
+        .from('snack_orders')
+        .insert({
+          user_id: profile.id,
+          snack_stock_id: snack.stockId,
+          quantity,
+          amount,
+          payment_status: 'pending',
+          qr_token: token,
+          scanned: false,
+        })
+        .select('id')
+        .single()
+
+      if (insertError || !pendingData) throw new Error(insertError?.message || 'Failed to create order')
+      pendingRecordId = pendingData.id
+
+      // 2. Create Razorpay order
+      const rOrderRes = await fetch('/api/payments/create-order', {
         method: 'POST',
-        body: JSON.stringify({ amount, receipt: `snack_${snack.id}` }),
+        body: JSON.stringify({ amount, receipt: `snack_${pendingRecordId}` }),
         headers: { 'Content-Type': 'application/json' }
-      }).then(r => r.json())
+      })
+      const rOrder = await rOrderRes.json()
       if (rOrder.error) throw new Error(rOrder.error)
 
       const options = {
@@ -286,33 +350,56 @@ export default function HostelerDashboard() {
         amount: amount * 100,
         currency: "INR",
         name: "Canteen Snacks",
-        description: `Order: ${quantity}x ${snack.name}`,
+        description: `${quantity}x ${snack.name}`,
         order_id: rOrder.orderId,
         handler: async function (response: any) {
-          const verifyReq = await fetch('/api/payments/verify-payment', {
-            method: 'POST',
-            body: JSON.stringify(response),
-            headers: { 'Content-Type': 'application/json' }
-          })
-          const verify = await verifyReq.json()
-          if (verify.success) {
-            const randStr = Math.random().toString(36).substring(7)
-            const token = `SNK-${profile.id}-${randStr}`
+          try {
+            console.log('Razorpay response:', response)
             
-            await supabase.from('snack_orders').insert({
-              user_id: profile.id,
-              snack_stock_id: snack.stockId,
-              quantity,
-              amount,
-              payment_status: 'paid',
-              qr_token: token,
-              scanned: false,
+            const verifyPayload = {
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+              type: 'snack_order',
+              record_id: pendingRecordId,
+              qr_token: token
+            }
+            
+            console.log('Verify payload:', verifyPayload)
+
+            const verifyReq = await fetch('/api/payments/verify-payment', {
+              method: 'POST',
+              body: JSON.stringify(verifyPayload),
+              headers: { 'Content-Type': 'application/json' }
             })
-            // Optionally deduction of local remaining_stock or trigger function. Postgres handles remainder dynamically via function ideally, but we will reload.
-            setSnackQuantities(prev => ({...prev, [snack.id]: 1}))
-            await loadData()
-          } else {
-            alert('Verification Failed')
+            
+            const verifyText = await verifyReq.text()
+            console.log('Verify response:', verifyText)
+            
+            const verify = JSON.parse(verifyText)
+            
+            if (verify.success) {
+              setSnackQuantities(prev => ({...prev, [snack.id]: 1}))
+              setModalQrToken(token)
+              setModalOrderDetails({ name: snack.name, quantity, amount })
+              setShowQrModal(true)
+              await loadData()
+            } else {
+              alert('Verification Failed: ' + verify.error)
+              await supabase.from('snack_orders').delete().eq('id', pendingRecordId)
+            }
+          } catch (e: any) {
+            alert(e.message)
+          } finally {
+            setProcessingSnackId(null)
+          }
+        },
+        modal: {
+          ondismiss: async function() {
+            if (pendingRecordId) {
+              await supabase.from('snack_orders').delete().eq('id', pendingRecordId)
+            }
+            setProcessingSnackId(null)
           }
         },
         prefill: { name: profile.full_name, email: profile.email },
@@ -320,14 +407,22 @@ export default function HostelerDashboard() {
       }
 
       const rzp = new (window as any).Razorpay(options)
+      rzp.on('payment.failed', async function(res: any) {
+        alert(res.error.description)
+        if (pendingRecordId) {
+          await supabase.from('snack_orders').delete().eq('id', pendingRecordId)
+        }
+        setProcessingSnackId(null)
+      })
       rzp.open()
     } catch (err: any) {
       alert(err.message)
-    } finally {
+      if (pendingRecordId) {
+        await supabase.from('snack_orders').delete().eq('id', pendingRecordId)
+      }
       setProcessingSnackId(null)
     }
   }
-
   const checkIsActiveNow = (start: string, end: string) => {
     const now = new Date()
     const currentMins = now.getHours() * 60 + now.getMinutes()
@@ -544,8 +639,22 @@ export default function HostelerDashboard() {
                           </span>
                         </div>
                         {!order.scanned && order.qr_token && (
-                          <div className="p-1 bg-white border border-neutral-200 rounded">
-                            <QRCodeSVG value={order.qr_token} size={48} level="L" />
+                          <div 
+                            className="flex flex-col items-center cursor-pointer group"
+                            onClick={() => {
+                              setModalQrToken(order.qr_token!)
+                              setModalOrderDetails({ 
+                                name: order.snack_stock?.snack_items?.name || 'Snack Item', 
+                                quantity: order.quantity, 
+                                amount: order.amount 
+                              })
+                              setShowQrModal(true)
+                            }}
+                          >
+                            <div className="p-1 bg-white border border-neutral-200 rounded group-hover:border-purple-400 transition-colors">
+                              <QRCodeSVG value={order.qr_token} size={48} level="L" />
+                            </div>
+                            <span className="text-[9px] text-purple-600 mt-1 font-medium group-hover:underline">tap to enlarge</span>
                           </div>
                         )}
                       </div>
@@ -558,6 +667,39 @@ export default function HostelerDashboard() {
           </div>
         </div>
       </div>
+
+      {/* QR Code Modal */}
+      {showQrModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white dark:bg-neutral-800 rounded-2xl p-8 max-w-sm w-full shadow-2xl relative text-center">
+            <button 
+              onClick={() => setShowQrModal(false)}
+              className="absolute top-4 right-4 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+            
+            <h3 className="text-xl font-bold text-neutral-800 dark:text-neutral-100 mb-2">Order Confirmed</h3>
+            <p className="text-sm text-neutral-500 mb-6">Show this QR at the counter</p>
+            
+            <div className="bg-white p-4 rounded-xl inline-block border border-neutral-200 shadow-sm mb-6">
+              <QRCodeSVG value={modalQrToken} size={250} level="M" />
+            </div>
+            
+            {modalOrderDetails && (
+              <div className="bg-neutral-50 dark:bg-neutral-900 rounded-lg p-4 text-left">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="font-semibold text-neutral-800 dark:text-neutral-100">{modalOrderDetails.name} <span className="text-purple-600">x{modalOrderDetails.quantity}</span></span>
+                </div>
+                <div className="flex justify-between items-center border-t border-neutral-200 dark:border-neutral-700 pt-2 mt-2">
+                  <span className="text-sm text-neutral-500">Amount Paid</span>
+                  <span className="font-bold text-green-600">₹{modalOrderDetails.amount}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

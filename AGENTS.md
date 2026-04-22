@@ -70,9 +70,14 @@ Keep it always in sync with the actual codebase.
 - src/app/auth/register/page.tsx — Register with college email validation
 - src/app/dashboard/super-admin/page.tsx — Manage colleges and canteen admins
 - src/app/dashboard/canteen-admin/page.tsx — Manage meal slots, meal items, snack items, daily stock
+- src/app/dashboard/hosteler/page.tsx — Hosteler portal for subscriptions, daily QR passes, and snack orders
 
 ## API Routes Built
 - POST /api/admin/create-canteen-admin — Creates canteen admin using service role key
+- POST /api/payments/create-order — Creates Razorpay order
+- POST /api/payments/verify-payment — Verifies Razorpay payment signature
+- GET /api/qr/generate-daily — Auto-generates or retrieves today's QR securely bypassing RLS
+- POST /api/qr/verify — Verifies scanned QR token for hosteler meals, snack orders, and day scholar orders using service role bypass
 
 ## Razorpay Integration
 - Use NEXT_PUBLIC_RAZORPAY_KEY_ID for client side
@@ -88,7 +93,7 @@ Keep it always in sync with the actual codebase.
   - POST /api/payments/create-order
   - POST /api/payments/verify-payment
     - Body includes type: 'subscription' | 'order' | 'snack_order'
-    - Updates correct table based on type
+    - Updates correct table based on type, including qr_token for orders and snack_orders
 
 ## QR Codes
 - Generate using: import QRCode from 'qrcode.react'
@@ -109,3 +114,4 @@ Keep it always in sync with the actual codebase.
 - Never query profiles inside a profiles RLS policy — use get_my_role()
 - Always filter data by college_id for canteen_admin and student roles
 - Use service role key only in API routes, never in client components
+- When joining `profiles` from a table with multiple foreign keys to profiles (e.g. `user_id` and `scanned_by` in `orders`/`snack_orders`), always explicitly state the foreign key to avoid PostgREST PGRST201 ambiguous relation errors. Example: `profiles!snack_orders_user_id_fkey(full_name)`

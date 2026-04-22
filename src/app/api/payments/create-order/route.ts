@@ -14,15 +14,17 @@ export async function POST(req: Request) {
 
     const razorpay = new Razorpay({ key_id, key_secret })
 
-    const options = {
-      amount: amount * 100, // amount in paise
-      currency: 'INR',
-      receipt
-    }
+   const options = {
+    amount: Math.round(amount * 100),
+    currency: 'INR',
+    receipt: receipt.slice(0, 4) // trim to 40 chars
+}
     
     const order = await razorpay.orders.create(options)
     return NextResponse.json({ orderId: order.id }, { status: 200 })
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+ } catch (error: any) {
+    console.error('Razorpay error:', error)
+    return NextResponse.json({ error: error.message, details: JSON.stringify(error) }, { status: 500 })
+  
   }
 }
