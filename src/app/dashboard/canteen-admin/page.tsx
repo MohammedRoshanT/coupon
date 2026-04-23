@@ -49,6 +49,11 @@ export default function CanteenAdminDashboard() {
   const [slotStart, setSlotStart] = useState('')
   const [slotEnd, setSlotEnd] = useState('')
   const [creatingSlot, setCreatingSlot] = useState(false)
+  
+  const [editingSlotId, setEditingSlotId] = useState<string | null>(null)
+  const [editSlotStart, setEditSlotStart] = useState('')
+  const [editSlotEnd, setEditSlotEnd] = useState('')
+  const [savingSlotTime, setSavingSlotTime] = useState(false)
 
   const [mItemSlotId, setMItemSlotId] = useState('')
   const [mItemName, setMItemName] = useState('')
@@ -60,6 +65,7 @@ export default function CanteenAdminDashboard() {
 
   const [sItemName, setSItemName] = useState('')
   const [sItemPrice, setSItemPrice] = useState('')
+  const [sItemCategory, setSItemCategory] = useState<'meals' | 'drinks' | 'snacks'>('snacks')
   const [creatingSItem, setCreatingSItem] = useState(false)
 
   const [sStockInputs, setSStockInputs] = useState<{ [key: string]: string }>({})
@@ -164,61 +170,54 @@ export default function CanteenAdminDashboard() {
       // 1. Total Scanned
       const { count: scannedResults } = await supabase
         .from('meal_attendance')
-        .select('*, profiles!inner(college_id)', { count: 'exact', head: true })
+        .select('id, profiles!meal_attendance_user_id_fkey!inner(college_id)', { count: 'exact', head: true })
         .eq('date', todayStr)
         .eq('status', 'present')
         .eq('profiles.college_id', targetCollegeId)
 
       // 2. Orders (Meals)
-      const { data: ordersData } = await supabase
+      // Hosteler base meals
+      const { data: hostelerOrders } = await supabase
         .from('orders')
-        .select('amount, profiles!inner(college_id)')
+        .select('amount, profiles!orders_user_id_fkey!inner(college_id)')
         .eq('payment_status', 'paid')
         .gte('created_at', startOfDay)
         .lte('created_at', endOfDay)
         .eq('profiles.college_id', targetCollegeId)
 
-      const bookedMeals = ordersData ? ordersData.length : 0
-      const mealsRev = ordersData ? ordersData.reduce((acc, curr) => acc + (curr.amount || 0), 0) : 0
+      let bookedMeals = hostelerOrders ? hostelerOrders.length : 0
+      let totalRev = hostelerOrders ? hostelerOrders.reduce((acc, curr) => acc + (curr.amount || 0), 0) : 0
 
-      // 3. Snack Orders
-      const { data: sItemsData } = await supabase
-        .from('snack_items')
-        .select('id')
-        .eq('college_id', targetCollegeId)
+      // 3. All Snack Orders (includes Day Scholar meals)
+      const { data: allSnackOrders, error: sErr } = await supabase
+        .from('snack_orders')
+        .select('amount, snack_stock!inner(snack_items!inner(category, college_id))')
+        .eq('payment_status', 'paid')
+        .gte('created_at', startOfDay)
+        .lte('created_at', endOfDay)
+        .eq('snack_stock.snack_items.college_id', targetCollegeId)
 
-      const sItemIds = sItemsData ? sItemsData.map(s => s.id) : []
       let snackOrdersCount = 0
-      let snacksRev = 0
-      if (sItemIds.length > 0) {
-        const { data: sStocksData } = await supabase
-          .from('snack_stock')
-          .select('id')
-          .eq('date', todayStr)
-          .in('snack_item_id', sItemIds)
-        
-        if (sStocksData && sStocksData.length > 0) {
-          const sStockIds = sStocksData.map(s => s.id)
-          const { data: sOrdersData } = await supabase
-            .from('snack_orders')
-            .select('amount')
-            .eq('payment_status', 'paid')
-            .gte('created_at', startOfDay)
-            .lte('created_at', endOfDay)
-            .in('snack_stock_id', sStockIds)
-          
-          if (sOrdersData) {
-            snackOrdersCount = sOrdersData.length
-            snacksRev = sOrdersData.reduce((acc, curr) => acc + (curr.amount || 0), 0)
+
+      if (allSnackOrders) {
+        allSnackOrders.forEach((so: any) => {
+          totalRev += (so.amount || 0)
+          const cat = so.snack_stock?.snack_items?.category
+          if (cat === 'meals') {
+            bookedMeals += 1
+          } else {
+            snackOrdersCount += 1 // 'drinks' or 'snacks' or missing
           }
-        }
+        })
+      } else if (sErr) {
+        console.error('Snack orders fetch error:', sErr)
       }
 
       setOverview({
         booked: bookedMeals,
         scanned: scannedResults || 0,
         snackOrders: snackOrdersCount,
-        revenue: mealsRev + snacksRev
+        revenue: totalRev
       })
     } catch (err) {
       console.error('Failed to refresh stats:', err)
@@ -377,6 +376,24 @@ export default function CanteenAdminDashboard() {
     }
   }
 
+  const handleEditSlotTime = async (slotId: string) => {
+    setSavingSlotTime(true)
+    setError('')
+    try {
+      const { error } = await supabase.from('meal_slots').update({
+        start_time: editSlotStart,
+        end_time: editSlotEnd
+      }).eq('id', slotId)
+      if (error) throw error
+      setEditingSlotId(null)
+      await loadData()
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setSavingSlotTime(false)
+    }
+  }
+
   // --- Meal Items Handlers ---
   const handleCreateMealItem = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -461,12 +478,14 @@ export default function CanteenAdminDashboard() {
       const { error: insertError } = await supabase.from('snack_items').insert({
         college_id: profile.college_id,
         name: sItemName,
+        category: sItemCategory,
         price: parseFloat(sItemPrice) || 0,
         active: true
       })
       if (insertError) throw insertError
       setSItemName('')
       setSItemPrice('')
+      setSItemCategory('snacks')
       await loadData()
     } catch (err: any) {
       setError(err.message)
@@ -650,7 +669,10 @@ export default function CanteenAdminDashboard() {
 
         {/* 2 & 3. MEALS SECTION */}
         <div className="pt-8 border-t border-neutral-200 dark:border-neutral-700">
-          <h2 className="text-2xl font-bold text-neutral-800 dark:text-neutral-100 mb-6">Meals Management</h2>
+          <h2 className="text-2xl font-bold text-neutral-800 dark:text-neutral-100 mb-1">Hosteler Menu Management</h2>
+          <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-6 border-l-4 border-amber-400 pl-3 py-1 bg-amber-50 dark:bg-amber-900/10 inline-block rounded-r-md">
+            These meal slots and items are for hostelers only. Day scholars order from the Snacks & Counter Items section below.
+          </p>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             
             {/* Meal Slots configuration */}
@@ -716,12 +738,32 @@ export default function CanteenAdminDashboard() {
                         <div className="flex justify-between items-center border-b border-neutral-200 dark:border-neutral-700 pb-2 mb-3">
                           <div>
                             <p className="font-bold capitalize text-lg tracking-tight">{slot.name.replace('_', ' ')}</p>
-                            <p className="text-xs text-neutral-500">{slot.start_time.slice(0, 5)} - {slot.end_time.slice(0, 5)}</p>
+                            {editingSlotId === slot.id ? (
+                              <div className="flex items-center space-x-2 mt-1">
+                                <input type="time" value={editSlotStart} onChange={(e) => setEditSlotStart(e.target.value)} className="text-xs px-1 py-0.5 border border-neutral-300 dark:border-neutral-600 rounded bg-transparent focus:outline-none focus:ring-1 focus:ring-purple-600" />
+                                <span className="text-xs">-</span>
+                                <input type="time" value={editSlotEnd} onChange={(e) => setEditSlotEnd(e.target.value)} className="text-xs px-1 py-0.5 border border-neutral-300 dark:border-neutral-600 rounded bg-transparent focus:outline-none focus:ring-1 focus:ring-purple-600" />
+                                <button onClick={() => handleEditSlotTime(slot.id)} disabled={savingSlotTime} className="text-[10px] bg-purple-600 hover:bg-purple-700 transition-colors text-white px-2 py-0.5 rounded font-medium disabled:opacity-50">Save</button>
+                                <button onClick={() => setEditingSlotId(null)} className="text-[10px] bg-neutral-200 hover:bg-neutral-300 dark:bg-neutral-700 dark:hover:bg-neutral-600 transition-colors px-2 py-0.5 rounded font-medium text-neutral-700 dark:text-neutral-300">Cancel</button>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-neutral-500">{slot.start_time.slice(0, 5)} - {slot.end_time.slice(0, 5)}</p>
+                            )}
                           </div>
                           <div className="flex items-center space-x-3">
                             <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full ${slot.active ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-400'}`}>
                               {slot.active ? 'Active' : 'Offline'}
                             </span>
+                            <button
+                              onClick={() => {
+                                setEditingSlotId(slot.id)
+                                setEditSlotStart(slot.start_time)
+                                setEditSlotEnd(slot.end_time)
+                              }}
+                              className="text-xs hover:underline text-blue-500"
+                            >
+                              Edit
+                            </button>
                             <button
                               onClick={() => toggleSlotActive(slot.id, slot.active)}
                               className={`text-xs hover:underline ${slot.active ? 'text-red-500' : 'text-green-500'}`}
@@ -902,6 +944,19 @@ export default function CanteenAdminDashboard() {
                     />
                   </div>
                   <div>
+                    <label className="block text-sm font-medium mb-1 text-neutral-700 dark:text-neutral-300">Category</label>
+                    <select
+                      required
+                      value={sItemCategory}
+                      onChange={(e) => setSItemCategory(e.target.value as any)}
+                      className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 rounded-md bg-transparent focus:outline-none focus:ring-2 focus:ring-purple-600 [&>option]:text-black"
+                    >
+                      <option value="meals">Meals</option>
+                      <option value="drinks">Drinks</option>
+                      <option value="snacks">Snacks</option>
+                    </select>
+                  </div>
+                  <div>
                     <label className="block text-sm font-medium mb-1 text-neutral-700 dark:text-neutral-300">Price (₹)</label>
                     <input
                       type="number"
@@ -932,8 +987,15 @@ export default function CanteenAdminDashboard() {
                     {snackItems.map(snack => (
                       <li key={snack.id} className="flex justify-between items-center p-3 border border-neutral-100 dark:border-neutral-700/50 rounded-lg bg-neutral-50 dark:bg-neutral-900/50">
                         <div className="flex flex-col">
-                          <span className={`font-semibold text-[15px] ${snack.active ? 'text-neutral-900 dark:text-white' : 'text-neutral-400 line-through'}`}>{snack.name}</span>
-                          <span className="text-xs text-green-600 dark:text-green-400 font-medium">₹{snack.price}</span>
+                          <div className="flex items-center space-x-2">
+                            <span className={`font-semibold text-[15px] ${snack.active ? 'text-neutral-900 dark:text-white' : 'text-neutral-400 line-through'}`}>{snack.name}</span>
+                            {snack.category && (
+                              <span className="text-[10px] bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 px-2 py-0.5 rounded capitalize">
+                                {snack.category}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-xs text-green-600 dark:text-green-400 font-medium mt-1">₹{snack.price}</span>
                         </div>
                         <div className="flex items-center space-x-3">
                           <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full ${snack.active ? 'bg-green-100 text-green-700 dark:bg-green-900/30' : 'bg-neutral-200 text-neutral-500 dark:bg-neutral-700'}`}>

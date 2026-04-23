@@ -38,7 +38,7 @@ Keep it always in sync with the actual codebase.
   - name: 'breakfast' | 'lunch' | 'tea_snacks' | 'dinner'
 - meal_items (id, college_id, meal_slot_id, name, price, active)
 - meal_item_stock (id, meal_item_id, date, total_stock, remaining_stock, is_closed)
-- snack_items (id, college_id, name, price, active)
+- snack_items (id, college_id, name, category, price, active)
 - snack_stock (id, snack_item_id, date, total_stock, remaining_stock, is_closed)
 - subscriptions (id, user_id, college_id, start_date, end_date, amount, payment_status, razorpay_order_id, razorpay_payment_id)
 - daily_qr (id, user_id, date, qr_token)
@@ -71,6 +71,7 @@ Keep it always in sync with the actual codebase.
 - src/app/dashboard/super-admin/page.tsx — Manage colleges and canteen admins
 - src/app/dashboard/canteen-admin/page.tsx — Manage meal slots, meal items, snack items, daily stock
 - src/app/dashboard/hosteler/page.tsx — Hosteler portal for subscriptions, daily QR passes, and snack orders
+- src/app/dashboard/day-scholar/page.tsx — Browse meal items and snacks, pay via Razorpay, get QR token, view order history
 
 ## API Routes Built
 - POST /api/admin/create-canteen-admin — Creates canteen admin using service role key
@@ -107,6 +108,13 @@ Keep it always in sync with the actual codebase.
 - canteen_admin — has college_id, manages their canteen only
 - hosteler — has college_id, pays monthly mess fee, gets daily QR
 - day_scholar — has college_id, pays per meal item and snack
+
+## Day Scholar Notes
+- Day scholars only order from `snack_items` grouped by category ('meals', 'drinks', 'snacks').
+- `orders` (meal table) logic has been removed from their dashboard.
+- QR token format: DS-userId-timestamp
+- Stock deduction handled in /api/payments/verify-payment (snack_orders table)
+- Orders filtered by created_at date range for today
 
 ## Important Rules for AI Agents
 - Always update this file when adding new routes, tables, or patterns

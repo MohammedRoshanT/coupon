@@ -116,6 +116,7 @@ export interface SnackItem {
   id: string
   college_id: string
   name: string
+  category: 'meals' | 'drinks' | 'snacks'
   price: number
   active: boolean
   created_at: string
