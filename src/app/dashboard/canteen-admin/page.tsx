@@ -65,8 +65,8 @@ export default function CanteenAdminDashboard() {
   const [sStockInputs, setSStockInputs] = useState<{ [key: string]: string }>({})
   const [settingSStock, setSettingSStock] = useState<{ [key: string]: boolean }>({})
 
-  const loadData = async () => {
-    setLoading(true)
+  const loadData = async (showSpinner = true) => {
+    if (showSpinner) setLoading(true)
     setError('')
     try {
       const { data: { user } } = await supabase.auth.getUser()
@@ -147,7 +147,7 @@ export default function CanteenAdminDashboard() {
     } catch (err: any) {
       setError(err.message)
     } finally {
-      setLoading(false)
+      if (showSpinner) setLoading(false)
     }
   }
 
@@ -155,6 +155,11 @@ export default function CanteenAdminDashboard() {
     const targetCollegeId = cid || profile?.college_id
     if (!targetCollegeId) return
     setRefreshingStats(true)
+
+    const now = new Date()
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).toISOString()
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString()
+
     try {
       // 1. Total Scanned
       const { count: scannedResults } = await supabase
@@ -169,8 +174,8 @@ export default function CanteenAdminDashboard() {
         .from('orders')
         .select('amount, profiles!inner(college_id)')
         .eq('payment_status', 'paid')
-        .gte('created_at', `${todayStr}T00:00:00Z`)
-        .lte('created_at', `${todayStr}T23:59:59Z`)
+        .gte('created_at', startOfDay)
+        .lte('created_at', endOfDay)
         .eq('profiles.college_id', targetCollegeId)
 
       const bookedMeals = ordersData ? ordersData.length : 0
@@ -198,6 +203,8 @@ export default function CanteenAdminDashboard() {
             .from('snack_orders')
             .select('amount')
             .eq('payment_status', 'paid')
+            .gte('created_at', startOfDay)
+            .lte('created_at', endOfDay)
             .in('snack_stock_id', sStockIds)
           
           if (sOrdersData) {
@@ -221,7 +228,11 @@ export default function CanteenAdminDashboard() {
   }
 
   useEffect(() => {
-    loadData()
+    loadData(true)
+    const interval = setInterval(() => {
+      loadData(false)
+    }, 10000)
+    return () => clearInterval(interval)
   }, [])
 
   // --- Scanner Logic ---

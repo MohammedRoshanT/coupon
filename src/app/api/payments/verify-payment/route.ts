@@ -52,6 +52,27 @@ export async function POST(req: Request) {
         .eq('id', record_id)
 
       if (error) throw error
+
+      const { data: orderData } = await supabaseAdmin
+        .from('snack_orders')
+        .select('snack_stock_id, quantity')
+        .eq('id', record_id)
+        .single()
+
+      if (orderData) {
+        const { data: stockData } = await supabaseAdmin
+          .from('snack_stock')
+          .select('remaining_stock')
+          .eq('id', orderData.snack_stock_id)
+          .single()
+
+        if (stockData) {
+          await supabaseAdmin
+            .from('snack_stock')
+            .update({ remaining_stock: Math.max(0, stockData.remaining_stock - orderData.quantity) })
+            .eq('id', orderData.snack_stock_id)
+        }
+      }
     } else if (type === 'subscription') {
       const { error } = await supabaseAdmin
         .from('subscriptions')
@@ -75,6 +96,27 @@ export async function POST(req: Request) {
         .eq('id', record_id)
 
       if (error) throw error
+
+      const { data: orderData } = await supabaseAdmin
+        .from('orders')
+        .select('meal_item_stock_id, quantity')
+        .eq('id', record_id)
+        .single()
+
+      if (orderData) {
+        const { data: stockData } = await supabaseAdmin
+          .from('meal_item_stock')
+          .select('remaining_stock')
+          .eq('id', orderData.meal_item_stock_id)
+          .single()
+
+        if (stockData) {
+          await supabaseAdmin
+            .from('meal_item_stock')
+            .update({ remaining_stock: Math.max(0, stockData.remaining_stock - orderData.quantity) })
+            .eq('id', orderData.meal_item_stock_id)
+        }
+      }
     } else {
       return NextResponse.json({ success: false, error: 'Invalid order type' }, { status: 400 })
     }
