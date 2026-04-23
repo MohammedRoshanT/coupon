@@ -158,13 +158,18 @@ export default function HostelerDashboard() {
       setAvailableSnacks(mappedSnacks)
 
       // SNACK ORDERS TODAY
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date();
+      endOfDay.setHours(23, 59, 59, 999);
+
       const { data: sOrdersData } = await supabase
         .from('snack_orders')
         .select('*, snack_stock(snack_items(name))')
         .eq('user_id', user.id)
         .eq('payment_status', 'paid')
-        .gte('created_at', `${todayStr}T00:00:00Z`)
-        .lte('created_at', `${todayStr}T23:59:59Z`)
+        .gte('created_at', startOfDay.toISOString())
+        .lte('created_at', endOfDay.toISOString())
         .order('created_at', { ascending: false })
       
       setSnackOrders((sOrdersData || []) as SnackOrderWithDetails[])
