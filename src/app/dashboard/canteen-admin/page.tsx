@@ -3,8 +3,9 @@
 import { useEffect, useState, useRef } from 'react'
 import { Html5QrcodeScanner, Html5QrcodeScannerState } from 'html5-qrcode'
 import { createClient } from '@/lib/supabase/client'
-import { MealSlot, MealItem, MealItemStock, SnackItem, SnackStock, Profile } from '@/types'
+import { MealSlot, SnackItem, SnackStock, Profile } from '@/types'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 
 export default function CanteenAdminDashboard() {
   const router = useRouter()
@@ -16,14 +17,12 @@ export default function CanteenAdminDashboard() {
 
   // DB States
   const [mealSlots, setMealSlots] = useState<MealSlot[]>([])
-  const [mealItems, setMealItems] = useState<MealItem[]>([])
-  const [todayMealStocks, setTodayMealStocks] = useState<MealItemStock[]>([])
 
   const [snackItems, setSnackItems] = useState<SnackItem[]>([])
   const [todaySnackStocks, setTodaySnackStocks] = useState<SnackStock[]>([])
 
   // Overview
-  const [overview, setOverview] = useState({ booked: 0, scanned: 0, snackOrders: 0, revenue: 0 })
+  const [overview, setOverview] = useState({ booked: 0, snackOrders: 0, revenue: 0 })
   const [refreshingStats, setRefreshingStats] = useState(false)
 
   // Current Date
@@ -54,14 +53,6 @@ export default function CanteenAdminDashboard() {
   const [editSlotStart, setEditSlotStart] = useState('')
   const [editSlotEnd, setEditSlotEnd] = useState('')
   const [savingSlotTime, setSavingSlotTime] = useState(false)
-
-  const [mItemSlotId, setMItemSlotId] = useState('')
-  const [mItemName, setMItemName] = useState('')
-  const [mItemPrice, setMItemPrice] = useState('')
-  const [creatingMItem, setCreatingMItem] = useState(false)
-
-  const [mStockInputs, setMStockInputs] = useState<{ [key: string]: string }>({})
-  const [settingMStock, setSettingMStock] = useState<{ [key: string]: boolean }>({})
 
   const [sItemName, setSItemName] = useState('')
   const [sItemPrice, setSItemPrice] = useState('')
@@ -100,29 +91,6 @@ export default function CanteenAdminDashboard() {
       if (slotsError) throw slotsError
       const slots = (slotsData || []) as MealSlot[]
       setMealSlots(slots)
-
-      // Fetch Meal Items
-      const { data: mItemsData, error: mItemsError } = await supabase
-        .from('meal_items')
-        .select('*')
-        .eq('college_id', collegeId)
-        .order('created_at')
-      if (mItemsError) throw mItemsError
-      const mItems = (mItemsData || []) as MealItem[]
-      setMealItems(mItems)
-
-      // Fetch Today's Meal Stocks
-      const mItemIds = mItems.map(m => m.id)
-      let mStocks: MealItemStock[] = []
-      if (mItemIds.length > 0) {
-        const { data: mStocksData } = await supabase
-          .from('meal_item_stock')
-          .select('*')
-          .eq('date', todayStr)
-          .in('meal_item_id', mItemIds)
-        mStocks = (mStocksData || []) as MealItemStock[]
-      }
-      setTodayMealStocks(mStocks)
 
       // Fetch Snack Items
       const { data: snacksData, error: snacksError } = await supabase
@@ -167,15 +135,7 @@ export default function CanteenAdminDashboard() {
     const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString()
 
     try {
-      // 1. Total Scanned
-      const { count: scannedResults } = await supabase
-        .from('meal_attendance')
-        .select('id, profiles!meal_attendance_user_id_fkey!inner(college_id)', { count: 'exact', head: true })
-        .eq('date', todayStr)
-        .eq('status', 'present')
-        .eq('profiles.college_id', targetCollegeId)
-
-      // 2. Orders (Meals)
+      // 1. Orders (Meals)
       // Hosteler base meals
       const { data: hostelerOrders } = await supabase
         .from('orders')
@@ -215,7 +175,6 @@ export default function CanteenAdminDashboard() {
 
       setOverview({
         booked: bookedMeals,
-        scanned: scannedResults || 0,
         snackOrders: snackOrdersCount,
         revenue: totalRev
       })
@@ -230,7 +189,7 @@ export default function CanteenAdminDashboard() {
     loadData(true)
     const interval = setInterval(() => {
       loadData(false)
-    }, 10000)
+    }, 30000)
     return () => clearInterval(interval)
   }, [])
 
@@ -394,80 +353,6 @@ export default function CanteenAdminDashboard() {
     }
   }
 
-  // --- Meal Items Handlers ---
-  const handleCreateMealItem = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!profile) return
-    setCreatingMItem(true)
-    setError('')
-    try {
-      const { error: insertError } = await supabase.from('meal_items').insert({
-        college_id: profile.college_id,
-        meal_slot_id: mItemSlotId,
-        name: mItemName,
-        price: parseFloat(mItemPrice) || 0,
-        active: true
-      })
-      if (insertError) throw insertError
-      setMItemName('')
-      setMItemPrice('')
-      await loadData()
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setCreatingMItem(false)
-    }
-  }
-
-  const toggleMItemActive = async (id: string, active: boolean) => {
-    setError('')
-    try {
-      const { error } = await supabase.from('meal_items').update({ active: !active }).eq('id', id)
-      if (error) throw error
-      await loadData()
-    } catch (err: any) {
-      setError(err.message)
-    }
-  }
-
-  // --- Meal Item Stock Handlers ---
-  const handleSetMStock = async (mItemId: string) => {
-    const total = parseInt(mStockInputs[mItemId] || '0')
-    if (total <= 0) return
-    setSettingMStock(prev => ({ ...prev, [mItemId]: true }))
-    setError('')
-    try {
-      const { error } = await supabase.from('meal_item_stock').insert({
-        meal_item_id: mItemId,
-        date: todayStr,
-        total_stock: total,
-        remaining_stock: total,
-        is_closed: false
-      })
-      if (error) throw error
-      setMStockInputs(prev => ({ ...prev, [mItemId]: '' }))
-      await loadData()
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setSettingMStock(prev => ({ ...prev, [mItemId]: false }))
-    }
-  }
-
-  const handleCloseMStock = async (stockId: string, mItemId: string) => {
-    setSettingMStock(prev => ({ ...prev, [mItemId]: true }))
-    setError('')
-    try {
-      const { error } = await supabase.from('meal_item_stock').update({ is_closed: true }).eq('id', stockId)
-      if (error) throw error
-      await loadData()
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setSettingMStock(prev => ({ ...prev, [mItemId]: false }))
-    }
-  }
-
   // --- Snack Items Handlers ---
   const handleCreateSnackItem = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -551,13 +436,6 @@ export default function CanteenAdminDashboard() {
     )
   }
 
-  // Group meal items by slot
-  const mealItemsBySlot: Record<string, MealItem[]> = {}
-  mealItems.forEach(mi => {
-    if (!mealItemsBySlot[mi.meal_slot_id]) mealItemsBySlot[mi.meal_slot_id] = []
-    mealItemsBySlot[mi.meal_slot_id].push(mi)
-  })
-
   return (
     <div className="min-h-screen bg-neutral-50 dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 p-8 pb-32">
       <div className="max-w-7xl mx-auto space-y-8">
@@ -566,16 +444,24 @@ export default function CanteenAdminDashboard() {
         <header className="flex justify-between items-center">
           <div>
             <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-600 to-purple-400 bg-clip-text text-transparent">
-              Canteen Admin Dashboard
+              Canteen Admin
             </h1>
-            <p className="text-neutral-500 dark:text-neutral-400 mt-1">Date: {todayStr}</p>
+            <p className="text-neutral-500 dark:text-neutral-400 mt-1">Manage meals, snacks, and daily operations</p>
           </div>
-          <button
-            onClick={handleLogout}
-            className="px-4 py-2 bg-neutral-200 dark:bg-neutral-800 hover:bg-neutral-300 dark:hover:bg-neutral-700 rounded-md transition-colors"
-          >
-            Logout
-          </button>
+          <div className="flex items-center space-x-4">
+            <Link
+              href="/dashboard/canteen-admin/ledger"
+              className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md transition-colors font-medium text-sm"
+            >
+              View Ledger
+            </Link>
+            <button
+              onClick={handleLogout}
+              className="px-4 py-2 bg-neutral-200 dark:bg-neutral-800 hover:bg-neutral-300 dark:hover:bg-neutral-700 rounded-md transition-colors font-medium"
+            >
+              Logout
+            </button>
+          </div>
         </header>
 
         {error && (
@@ -597,14 +483,10 @@ export default function CanteenAdminDashboard() {
               <span>{refreshingStats ? 'Refreshing...' : 'Refresh'}</span>
             </button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
               <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Meals Booked</h3>
               <p className="text-4xl font-bold text-purple-600 dark:text-purple-400 mt-2">{overview.booked}</p>
-            </div>
-            <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
-              <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Hostelers Scanned</h3>
-              <p className="text-4xl font-bold text-purple-600 dark:text-purple-400 mt-2">{overview.scanned}</p>
             </div>
             <div className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 flex flex-col items-center justify-center">
               <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-widest text-center">Snack Orders</h3>
@@ -667,13 +549,13 @@ export default function CanteenAdminDashboard() {
           )}
         </section>
 
-        {/* 2 & 3. MEALS SECTION */}
+        {/* HOSTELER SCHEDULE SECTION */}
         <div className="pt-8 border-t border-neutral-200 dark:border-neutral-700">
-          <h2 className="text-2xl font-bold text-neutral-800 dark:text-neutral-100 mb-1">Hosteler Menu Management</h2>
+          <h2 className="text-2xl font-bold text-neutral-800 dark:text-neutral-100 mb-1">Hosteler Meal Schedule</h2>
           <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-6 border-l-4 border-amber-400 pl-3 py-1 bg-amber-50 dark:bg-amber-900/10 inline-block rounded-r-md">
-            These meal slots and items are for hostelers only. Day scholars order from the Snacks & Counter Items section below.
+            Set time windows for each meal. Hostelers scan their QR during these windows.
           </p>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div className="max-w-2xl">
             
             {/* Meal Slots configuration */}
             <div className="space-y-6">
@@ -772,149 +654,8 @@ export default function CanteenAdminDashboard() {
                             </button>
                           </div>
                         </div>
-                        
-                        {/* Nested items inside this slot */}
-                        {mealItemsBySlot[slot.id]?.length > 0 ? (
-                          <ul className="space-y-2">
-                            {mealItemsBySlot[slot.id].map(item => (
-                              <li key={item.id} className="flex justify-between items-center text-sm bg-white dark:bg-neutral-800 p-2 rounded border border-neutral-100 dark:border-neutral-700/50">
-                                <div className="flex items-center space-x-2">
-                                  <span className={`w-2 h-2 rounded-full ${item.active ? 'bg-green-500' : 'bg-neutral-300 dark:bg-neutral-600'}`}></span>
-                                  <span className={item.active ? 'text-neutral-800 dark:text-neutral-200' : 'text-neutral-400 line-through'}>{item.name}</span>
-                                </div>
-                                <div className="flex items-center space-x-3">
-                                  <span className="font-medium text-green-600 dark:text-green-400">₹{item.price}</span>
-                                  <button onClick={() => toggleMItemActive(item.id, item.active)} className="text-[10px] uppercase text-neutral-400 hover:text-purple-500 font-bold transition-colors">
-                                    Toggle
-                                  </button>
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p className="text-xs text-neutral-400 italic">No items added to this slot.</p>
-                        )}
                       </div>
                     ))}
-                  </div>
-                )}
-              </section>
-            </div>
-
-            {/* Meal Items configuration & stock */}
-            <div className="space-y-6">
-              <section className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700 border-t-4 border-t-purple-500">
-                <h3 className="text-lg font-semibold mb-4 text-purple-600 dark:text-purple-400">Add Meal Item</h3>
-                <form onSubmit={handleCreateMealItem} className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium mb-1 text-neutral-700 dark:text-neutral-300">Assign to Slot</label>
-                    <select
-                      required
-                      value={mItemSlotId}
-                      onChange={(e) => setMItemSlotId(e.target.value)}
-                      className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 rounded-md bg-transparent focus:outline-none focus:ring-2 focus:ring-purple-600 [&>option]:text-black"
-                    >
-                      <option value="">Select a slot...</option>
-                      {mealSlots.filter(s => s.active).map(slot => (
-                        <option key={slot.id} value={slot.id}>{slot.name.replace('_', ' ')}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-1 text-neutral-700 dark:text-neutral-300">Item Name</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Veg Thali"
-                      value={mItemName}
-                      onChange={(e) => setMItemName(e.target.value)}
-                      className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 rounded-md bg-transparent focus:outline-none focus:ring-2 focus:ring-purple-600"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-1 text-neutral-700 dark:text-neutral-300">Price (₹)</label>
-                    <input
-                      type="number"
-                      required
-                      min="0"
-                      step="0.01"
-                      value={mItemPrice}
-                      onChange={(e) => setMItemPrice(e.target.value)}
-                      className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 rounded-md bg-transparent focus:outline-none focus:ring-2 focus:ring-purple-600"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={creatingMItem || mealSlots.length === 0}
-                    className="w-full bg-purple-600 hover:bg-purple-700 text-white py-2 rounded-md transition-colors disabled:opacity-50 font-medium"
-                  >
-                    {creatingMItem ? 'Adding...' : 'Save Meal Item'}
-                  </button>
-                </form>
-              </section>
-
-              {/* 4. DAILY MEAL ITEM STOCK */}
-              <section className="bg-white dark:bg-neutral-800 p-6 rounded-xl shadow-sm border border-neutral-200 dark:border-neutral-700">
-                <h3 className="text-lg font-semibold mb-4 text-purple-600 dark:text-purple-400">Daily Meal Item Stock</h3>
-                {mealItems.filter(m => m.active).length === 0 ? (
-                  <p className="text-sm text-neutral-500">No active meal items available. Add items above.</p>
-                ) : (
-                  <div className="space-y-4">
-                    {mealItems.filter(m => m.active).map(item => {
-                      const stockLog = todayMealStocks.find(s => s.meal_item_id === item.id)
-                      const isSetting = settingMStock[item.id]
-
-                      return (
-                        <div key={item.id} className="p-4 border border-neutral-200 dark:border-neutral-700 rounded-lg">
-                          <div className="flex justify-between items-center mb-2">
-                            <p className="font-semibold">{item.name}</p>
-                            <span className="text-xs bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-2 py-0.5 rounded capitalize">
-                              {mealSlots.find(s => s.id === item.meal_slot_id)?.name.replace('_', ' ')}
-                            </span>
-                          </div>
-
-                          {!stockLog ? (
-                            <div className="flex space-x-2">
-                              <input
-                                type="number"
-                                placeholder="Qty"
-                                className="w-24 px-2 py-1 text-sm border border-neutral-300 dark:border-neutral-600 rounded-md bg-transparent focus:outline-none focus:ring-2 focus:ring-purple-600"
-                                value={mStockInputs[item.id] || ''}
-                                onChange={(e) => setMStockInputs(prev => ({ ...prev, [item.id]: e.target.value }))}
-                                min="1"
-                              />
-                              <button
-                                onClick={() => handleSetMStock(item.id)}
-                                disabled={isSetting || !mStockInputs[item.id]}
-                                className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1 text-sm rounded-md font-medium disabled:opacity-50 transition-colors"
-                              >
-                                {isSetting ? '...' : 'Set Stock'}
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="flex justify-between items-center bg-neutral-50 dark:bg-neutral-800/50 p-2 rounded border border-neutral-100 dark:border-neutral-700/50">
-                              <div className="text-sm">
-                                <p className="text-neutral-500 dark:text-neutral-400">Total: <span className="font-medium text-neutral-900 dark:text-neutral-100">{stockLog.total_stock}</span></p>
-                                <p className="text-neutral-500 dark:text-neutral-400">Rem: <span className="font-bold text-neutral-900 dark:text-neutral-100">{stockLog.remaining_stock}</span></p>
-                              </div>
-                              <div className="text-right">
-                                {stockLog.is_closed ? (
-                                  <span className="text-xs font-bold text-red-500 px-2 py-1 rounded-full bg-red-50 dark:bg-red-900/10">CLOSED</span>
-                                ) : (
-                                  <button
-                                    onClick={() => handleCloseMStock(stockLog.id, item.id)}
-                                    disabled={isSetting}
-                                    className="text-xs bg-red-100 hover:bg-red-200 dark:bg-red-900/30 dark:hover:bg-red-900/50 text-red-700 dark:text-red-400 font-medium px-3 py-1.5 rounded transition-colors disabled:opacity-50"
-                                  >
-                                    Close Manually
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
                   </div>
                 )}
               </section>
