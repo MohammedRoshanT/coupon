@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Digital Canteen Coupon",
+  title: "Digital Canteen System",
   description: "Pre-book meals, manage mess subscriptions, and scan daily QR codes.",
 };
 
