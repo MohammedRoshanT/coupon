@@ -34,7 +34,18 @@ export async function POST(req: Request) {
       }
     })
 
-    const todayStr = new Date().toLocaleDateString('en-CA')
+    // --- TIMEZONE CONFIGURATION ---
+    // Change this if your college is not in India (IST)
+    const TIMEZONE = 'Asia/Kolkata';
+
+    // Get the correct Local Date (YYYY-MM-DD)
+    const dateFormatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+    const todayStr = dateFormatter.format(new Date());
 
     // --- CHECK 1: daily_qr table (Hosteler Meal) ---
     const { data: dailyQrData } = await supabaseAdmin
@@ -69,10 +80,15 @@ export async function POST(req: Request) {
         return NextResponse.json({ success: false, message: 'No active meal slots right now' }, { status: 400 })
       }
 
-      const now = new Date()
-      const currentHours = now.getHours()
-      const currentMinutes = now.getMinutes()
-      const currentTimeStr = `${currentHours.toString().padStart(2, '0')}:${currentMinutes.toString().padStart(2, '0')}:00`
+      // Get the correct Local Time (HH:mm:ss) in 24-hour format
+      const timeFormatter = new Intl.DateTimeFormat('en-GB', { 
+        timeZone: TIMEZONE,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false 
+      });
+      const currentTimeStr = timeFormatter.format(new Date());
 
       const currentSlot = activeSlots.find(slot => {
         return currentTimeStr >= slot.start_time && currentTimeStr <= slot.end_time
@@ -102,7 +118,7 @@ export async function POST(req: Request) {
           user_id: studentId,
           meal_slot_id: currentSlot.id,
           date: todayStr,
-          scanned_at: new Date().toISOString(),
+          scanned_at: new Date().toISOString(), // Standard practice is to keep DB timestamps in UTC
           status: 'present',
           scanned_by: user.id
         })
