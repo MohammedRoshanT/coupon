@@ -182,7 +182,7 @@ export default function DayScholarDashboard() {
       // 2. Create Razorpay order
       const rOrderRes = await fetch('/api/payments/create-order', {
         method: 'POST',
-        body: JSON.stringify({ amount, receipt: `ds_${pendingRecordId.slice(0, 25)}` }),
+        body: JSON.stringify({ amount, receipt: `ds_${pendingRecordId?.slice(0, 25) || 'unknown'}` }),
         headers: { 'Content-Type': 'application/json' }
       })
       const rOrder = await rOrderRes.json()
